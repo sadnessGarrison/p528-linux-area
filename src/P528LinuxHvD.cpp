@@ -91,9 +91,6 @@ int RunHvD(HvDParams* params) {
                                          params->T_pol, params->p, params->target_A__db,
                                          &A__db, &A_fs__db, &A_a__db, &prop_mode, &warns);
 
-        if (warns & HVDWARN__TARGET_NOT_ACHIEVABLE)
-            rtn = SUCCESS_WITH_WARNINGS;
-
         data.distances.push_back(d);
         data.h2_equivs__meter.push_back(h2);
         data.A__dbs.push_back(A__db);
@@ -101,6 +98,11 @@ int RunHvD(HvDParams* params) {
         data.A_a__dbs.push_back(A_a__db);
         data.propagation_modes.push_back(prop_mode);
         data.warnings.push_back(warns);
+
+        if (warns & HVDWARN__TARGET_NOT_ACHIEVABLE) {
+            rtn = SUCCESS_WITH_WARNINGS;
+            break;
+        }
     }
 
     printf("\n");
@@ -112,15 +114,16 @@ int RunHvD(HvDParams* params) {
  |  Description:  Find the minimum h2 at which P.528 basic transmission
  |                loss is <= target_A__db, via bisection over [1.5, 20 000] m.
  |
- |                P.528 loss is not monotonic with h2: it can dip below the
- |                target, rise back above, then fall again at higher altitude.
- |                A wide bisection over the full range would converge on a
- |                false high-altitude root.  Instead, scan upward in coarse
- |                steps to find the first bracket where loss crosses from
- |                above to below the target, then bisect within that bracket.
+ |                P.528 loss is not monotonic with h2: it decreases to a local
+ |                minimum (first LOS valley) then can rise and fall again at
+ |                higher altitude.  Scans upward in 10 m steps and bisects
+ |                within the first bracket where loss crosses below the target.
+ |                Once loss climbs back more than 0.1 dB above the valley bottom
+ |                without having crossed the target, the first valley cannot
+ |                achieve the target and NAN is returned immediately.
  |
- |                Returns NAN with HVDWARN__TARGET_NOT_ACHIEVABLE if the loss
- |                at h2 = 20 000 m still exceeds the target.  Returns H2_MIN
+ |                Returns NAN with HVDWARN__TARGET_NOT_ACHIEVABLE if the target
+ |                is not achievable within the first LOS valley.  Returns H2_MIN
  |                if the target is already met at the minimum height.
  |
  |        Input:  d__km             - Path distance (km)
@@ -178,6 +181,7 @@ double FindEquivalentHeight(double d__km, double h_1__meter, double f__mhz,
         *warns             = r.warnings;
         return H2_MIN;
     }
+    double valley_A = r.A__db;   // track lowest loss seen during upward scan
 
     // Test at maximum height
     callP528(H2_MAX, &r);
@@ -191,12 +195,13 @@ double FindEquivalentHeight(double d__km, double h_1__meter, double f__mhz,
         return NAN;
     }
 
-    // Scan upward in coarse steps to find the first bracket [h2_lo, h2_hi]
-    // where loss crosses from above to below the target.  P.528 loss can be
-    // non-monotonic (dip below target, rise above, then fall again), so a
-    // wide bisection over [H2_MIN, H2_MAX] would miss the minimum root.
-    const double SCAN_STEP__meter = 100.0;
-    double h2_lo = H2_MIN;   // A(h2_lo) > target (verified above)
+    // Scan upward in 10 m steps.  Track the valley minimum (lowest A seen).
+    // As soon as A climbs back more than VALLEY_EXIT_MARGIN dB above that
+    // minimum without having crossed the target, the first LOS valley cannot
+    // achieve the target — return NAN instead of continuing to a distant root.
+    const double SCAN_STEP__meter   = 10.0;
+    const double VALLEY_EXIT_MARGIN = 0.1;   // dB
+    double h2_lo   = H2_MIN;
     double h2_scan = H2_MIN + SCAN_STEP__meter;
 
     while (h2_scan <= H2_MAX) {
@@ -220,18 +225,28 @@ double FindEquivalentHeight(double d__km, double h_1__meter, double f__mhz,
             *warns             = r.warnings;
             return h2_hi;
         }
-        h2_lo = h2_scan;
+        if (r.A__db < valley_A)
+            valley_A = r.A__db;
+        else if (r.A__db > valley_A + VALLEY_EXIT_MARGIN) {
+            // Climbed back past valley bottom without crossing target
+            *achieved_A__db    = 0;
+            *achieved_A_fs__db = 0;
+            *achieved_A_a__db  = 0;
+            *prop_mode         = 0;
+            *warns             = HVDWARN__TARGET_NOT_ACHIEVABLE;
+            return NAN;
+        }
+        h2_lo  = h2_scan;
         h2_scan += SCAN_STEP__meter;
     }
 
-    // H2_MAX check above confirmed a solution exists; return it as fallback
-    callP528(H2_MAX, &r);
-    *achieved_A__db    = r.A__db;
-    *achieved_A_fs__db = r.A_fs__db;
-    *achieved_A_a__db  = r.A_a__db;
-    *prop_mode         = r.propagation_mode;
-    *warns             = r.warnings;
-    return H2_MAX;
+    // Scan reached H2_MAX without finding target in first valley
+    *achieved_A__db    = 0;
+    *achieved_A_fs__db = 0;
+    *achieved_A_a__db  = 0;
+    *prop_mode         = 0;
+    *warns             = HVDWARN__TARGET_NOT_ACHIEVABLE;
+    return NAN;
 }
 
 /*=============================================================================
@@ -279,7 +294,7 @@ int WriteResultsToFile(HvDParams* params, const HvDData& data) {
     // Frequency
     char freq_str[32];
     snprintf(freq_str, sizeof(freq_str), "%.6g", params->f__mhz);
-    char out_path[MAX_FILENAME_LENGTH + 64];
+    char out_path[PATH_MAX + 2 * MAX_FILENAME_LENGTH + 80];
     snprintf(out_path, sizeof(out_path), "%s/%s_%s_%sMHz%s", out_dir, stem, ts, freq_str, ext);
     FILE* fp = fopen(out_path, "w");
     if (!fp) {

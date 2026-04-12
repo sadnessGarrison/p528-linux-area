@@ -225,7 +225,7 @@ int WriteResultsToFile(P528Params* params, const TrajectoryData& data) {
     // Frequency
     char freq_str[32];
     snprintf(freq_str, sizeof(freq_str), "%.6g", params->f__mhz);
-    char out_path[MAX_FILENAME_LENGTH + 64];
+    char out_path[PATH_MAX + 2 * MAX_FILENAME_LENGTH + 80];
     snprintf(out_path, sizeof(out_path), "%s/%s_%s_%sMHz%s", out_dir, stem, ts, freq_str, ext);
     FILE* fp = fopen(out_path, "w");
     if (!fp) {
