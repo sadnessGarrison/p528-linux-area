@@ -112,9 +112,12 @@ int RunHvD(HvDParams* params) {
  |  Description:  Find the minimum h2 at which P.528 basic transmission
  |                loss is <= target_A__db, via bisection over [1.5, 20 000] m.
  |
- |                The P.528 loss generally decreases as h2 increases (the path
- |                transitions from diffraction to LOS), so the function is
- |                treated as monotonically non-increasing for the bisection.
+ |                P.528 loss is not monotonic with h2: it can dip below the
+ |                target, rise back above, then fall again at higher altitude.
+ |                A wide bisection over the full range would converge on a
+ |                false high-altitude root.  Instead, scan upward in coarse
+ |                steps to find the first bracket where loss crosses from
+ |                above to below the target, then bisect within that bracket.
  |
  |                Returns NAN with HVDWARN__TARGET_NOT_ACHIEVABLE if the loss
  |                at h2 = 20 000 m still exceeds the target.  Returns H2_MIN
@@ -188,27 +191,47 @@ double FindEquivalentHeight(double d__km, double h_1__meter, double f__mhz,
         return NAN;
     }
 
-    // Bisect to find minimum h2 where A__db <= target_A__db.
-    // Invariant: A(h2_lo) > target, A(h2_hi) <= target
-    double h2_lo = H2_MIN;
-    double h2_hi = H2_MAX;
+    // Scan upward in coarse steps to find the first bracket [h2_lo, h2_hi]
+    // where loss crosses from above to below the target.  P.528 loss can be
+    // non-monotonic (dip below target, rise above, then fall again), so a
+    // wide bisection over [H2_MIN, H2_MAX] would miss the minimum root.
+    const double SCAN_STEP__meter = 100.0;
+    double h2_lo = H2_MIN;   // A(h2_lo) > target (verified above)
+    double h2_scan = H2_MIN + SCAN_STEP__meter;
 
-    while (h2_hi - h2_lo > TOLERANCE__meter) {
-        double h2_mid = (h2_lo + h2_hi) / 2.0;
-        callP528(h2_mid, &r);
-        if (r.A__db > target_A__db)
-            h2_lo = h2_mid;
-        else
-            h2_hi = h2_mid;
+    while (h2_scan <= H2_MAX) {
+        callP528(h2_scan, &r);
+        if (r.A__db <= target_A__db) {
+            // Found first downward crossing; bisect within [h2_lo, h2_scan]
+            double h2_hi = h2_scan;
+            while (h2_hi - h2_lo > TOLERANCE__meter) {
+                double h2_mid = (h2_lo + h2_hi) / 2.0;
+                callP528(h2_mid, &r);
+                if (r.A__db > target_A__db)
+                    h2_lo = h2_mid;
+                else
+                    h2_hi = h2_mid;
+            }
+            callP528(h2_hi, &r);
+            *achieved_A__db    = r.A__db;
+            *achieved_A_fs__db = r.A_fs__db;
+            *achieved_A_a__db  = r.A_a__db;
+            *prop_mode         = r.propagation_mode;
+            *warns             = r.warnings;
+            return h2_hi;
+        }
+        h2_lo = h2_scan;
+        h2_scan += SCAN_STEP__meter;
     }
 
-    callP528(h2_hi, &r);
+    // H2_MAX check above confirmed a solution exists; return it as fallback
+    callP528(H2_MAX, &r);
     *achieved_A__db    = r.A__db;
     *achieved_A_fs__db = r.A_fs__db;
     *achieved_A_a__db  = r.A_a__db;
     *prop_mode         = r.propagation_mode;
     *warns             = r.warnings;
-    return h2_hi;
+    return H2_MAX;
 }
 
 /*=============================================================================
