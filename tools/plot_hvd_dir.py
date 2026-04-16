@@ -85,6 +85,24 @@ def format_frequency_label(freq, freq_mhz):
     return f"{format_whole_number(freq) if freq_mhz is not None else freq} MHz"
 
 
+def format_transmit_power_summary(series):
+    """Return a compact dBm summary for aggregate plot titles."""
+    transmit_powers_dbm = sorted({item[2] for item in series if item[2] is not None})
+    if transmit_powers_dbm:
+        return f"{'/'.join(format_whole_number(value) for value in transmit_powers_dbm)} dBm"
+
+    transmit_power_labels = []
+    for _, _, _, label, _, _ in series:
+        if label not in transmit_power_labels:
+            transmit_power_labels.append(label)
+    return ", ".join(transmit_power_labels)
+
+
+def format_bold_label(text):
+    """Return a mathtext string that renders the given text in bold."""
+    return r"$\bf{" + text.replace(" ", r"\ ") + "}$"
+
+
 def is_in_old_subdir(path):
     """Return True when the path contains an 'old' directory component."""
     return "old" in os.path.normpath(path).split(os.sep)
@@ -219,22 +237,44 @@ def main():
     target = format_whole_number(title_params.get("target_A__db", "?"))
 
     ax.set_xlabel("Distance (mi)")
-    ax.set_ylabel("Equivalent Height H₂ (ft)")
+    ax.set_ylabel("Equivalent Receive Height H₂ (ft)")
     if len(directories) == 1 and args.frequency_mhz is None:
         transmit_power = format_transmit_power_label(get_transmit_power_label(directories[0]))
-        ax.set_title(
-            "Equivalent Height Required to Receive at Minimum Power\n"
-            f"ITU P.528 Model, Transmitter at {h1} ft, Probability = {p}%, "
-            f"Target Loss = {target} dB, Transmit Power = {transmit_power}"
-        )
+        metadata_lines = [
+            format_bold_label("ITU P.528 Model"),
+            f"{format_bold_label('Transmitter:')} {h1} ft",
+            f"{format_bold_label('Rx Probability:')} {p}%",
+            f"{format_bold_label('Target Loss:')} {target} dB",
+            f"{format_bold_label('Transmit Power:')} {transmit_power}",
+        ]
     else:
         frequency_label = format_frequency_label(args.frequency_mhz, args.frequency_mhz)
-        ax.set_title(
-            "Equivalent Height Required to Receive at Minimum Power\n"
-            f"ITU P.528 Model, Transmitter at {h1} ft, Probability = {p}%, "
-            f"Target Loss = {target} dB, Frequency = {frequency_label}"
+        metadata_lines = [
+            format_bold_label("ITU P.528 Model"),
+            f"{format_bold_label('Frequency:')} {frequency_label}",
+            f"{format_bold_label('Transmitter:')} {h1} ft",
+            f"{format_bold_label('Rx Probability:')} {p}%",
+            f"{format_bold_label('Target Loss:')} {target} dB",
+        ]
+    if len(directories) == 1 and args.frequency_mhz is None:
+        title = f"Equivalent Height at Same Receive Power (Tx: {transmit_power}, {h1} ft)"
+    else:
+        title = (
+            "Equivalent Height at Same Frequency "
+            f"(Tx: {frequency_label}, {h1} ft)"
         )
-    ax.legend()
+    ax.set_title(title, fontsize=16, pad=14)
+    ax.text(
+        0.02,
+        0.98,
+        "\n".join(metadata_lines),
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        fontsize=10,
+        bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.9, "edgecolor": "0.7"},
+    )
+    ax.legend(loc="lower right")
     ax.grid(True, linestyle="--", alpha=0.5)
     plt.tight_layout()
     fig.savefig(output_path, dpi=150)
